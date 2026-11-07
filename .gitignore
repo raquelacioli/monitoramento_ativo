@@ -8,4 +8,5 @@ serviceAccountKey.json
 *firebase*key*.json
 uploads/
 *.pdf
+instance/
 .vscode/

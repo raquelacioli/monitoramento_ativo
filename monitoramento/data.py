@@ -16,6 +16,11 @@ class PatientDemo:
     observation: str
     ending_soon_demo: bool = False
     review_signal_demo: bool = False
+    new_this_month_demo: bool = False
+    month_reference: str = "Novembro/2026"
+    last_updated: date = date(2026, 11, 1)
+    automatic_note: str = "Sem sinalização automática demonstrativa."
+    form_values: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,7 @@ def _patient(
     *,
     ending_soon_demo: bool = False,
     review_signal_demo: bool = False,
+    new_this_month_demo: bool = False,
 ) -> PatientDemo:
     today = date.today()
     return PatientDemo(
@@ -56,6 +62,16 @@ def _patient(
         observation=observation,
         ending_soon_demo=ending_soon_demo,
         review_signal_demo=review_signal_demo,
+        new_this_month_demo=new_this_month_demo,
+        automatic_note=(
+            "Verificar pendência demonstrativa."
+            if followup_status == "Acompanhamento pendente"
+            else (
+                "Sinalização para revisão humana; não representa diagnóstico."
+                if review_signal_demo
+                else "Sem sinalização automática demonstrativa."
+            )
+        ),
     )
 
 
@@ -66,12 +82,17 @@ MODULES: dict[str, ModuleDemo] = {
         accent="blue",
         patients=(
             _patient(
-                "DEMO-TB-001", "Unidade Demonstrativa Central", "Distrito Alfa",
+                "DEMO-TB-001",
+                "Unidade de Saúde de Vera (demonstração)",
+                "Distrito Demonstrativo de Vera",
                 110, 14, "Em acompanhamento", 3, 2, "1 contato a examinar",
                 "Registro fictício para demonstração.", ending_soon_demo=True,
+                new_this_month_demo=True,
             ),
             _patient(
-                "DEMO-TB-002", "Unidade Demonstrativa Central", "Distrito Alfa",
+                "DEMO-TB-002",
+                "Unidade de Saúde de Vera (demonstração)",
+                "Distrito Demonstrativo de Vera",
                 68, 96, "Acompanhamento pendente", 2, 1, "Retorno demonstrativo pendente",
                 "Conferir registro fictício na próxima revisão.",
             ),
@@ -95,12 +116,17 @@ MODULES: dict[str, ModuleDemo] = {
         accent="green",
         patients=(
             _patient(
-                "DEMO-HAN-001", "Unidade Demonstrativa Sul", "Distrito Gama",
+                "DEMO-HAN-001",
+                "Unidade de Saúde de Vera (demonstração)",
+                "Distrito Demonstrativo de Vera",
                 125, 21, "Em acompanhamento", 2, 1, "1 contato a examinar",
                 "Registro fictício para demonstração.", ending_soon_demo=True,
+                new_this_month_demo=True,
             ),
             _patient(
-                "DEMO-HAN-002", "Unidade Demonstrativa Sul", "Distrito Gama",
+                "DEMO-HAN-002",
+                "Unidade de Saúde de Vera (demonstração)",
+                "Distrito Demonstrativo de Vera",
                 76, 104, "Acompanhamento pendente", 3, 1, "2 contatos a examinar",
                 "Atualizar informação fictícia de acompanhamento.",
             ),
