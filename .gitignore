@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+serviceAccountKey.json
+*firebase*key*.json
+uploads/
+*.pdf
+.vscode/
