@@ -8,6 +8,7 @@ MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_PDF_PAGES = 250
 _ROW_START = re.compile(r"^\s*(\d{4,12})\s+(\d{1,2}/\d{1,2}/\d{2,4})\b")
 _DATE = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}")
+_UNIT_LINE = re.compile(r"^unidade\b\s*:?\s*(.*)$", flags=re.IGNORECASE)
 
 
 class PdfAnalysisError(ValueError):
@@ -43,6 +44,13 @@ class _MutableUnitSummary:
     contact_records_to_check: int = 0
 
 
+@dataclass(frozen=True)
+class _TableRecord:
+    contacts_registered: int | None
+    contacts_examined: int | None
+    contact_columns_found: bool
+
+
 def _normalize(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", value.casefold())
     return " ".join(
@@ -52,12 +60,19 @@ def _normalize(value: str) -> str:
 
 def _unit_from_lines(lines: list[str]) -> str | None:
     for line_index, line in enumerate(lines):
-        match = re.match(r"^unidade\s*:?\s*(.*)$", line, flags=re.IGNORECASE)
+        match = _UNIT_LINE.match(line)
         if not match:
             continue
         value = match.group(1).strip(" :-")
         if not value and line_index + 1 < len(lines):
             value = lines[line_index + 1].strip()
+            candidate = _normalize(value)
+            if (
+                "notifica" in candidate
+                or re.match(r"^(?:n[oº°.]?\s+(?:da|de)\b|data\b|nome\b|forma\b)", candidate)
+                or _ROW_START.match(value)
+            ):
+                continue
         if value and not re.fullmatch(r"[_\s.-]+", value):
             return " ".join(value.split())[:180]
     return None
@@ -107,10 +122,8 @@ def _record_row(row: list[object]) -> bool:
     return any(_DATE.search("" if cell is None else str(cell)) for cell in row[1:])
 
 
-def _table_rows(page: pymupdf.Page) -> tuple[list[list[object]], int | None, int | None]:
-    rows: list[list[object]] = []
-    registered_index: int | None = None
-    examined_index: int | None = None
+def _table_rows(page: pymupdf.Page) -> list[_TableRecord]:
+    rows: list[_TableRecord] = []
 
     for table in page.find_tables().tables:
         extracted = table.extract()
@@ -133,13 +146,21 @@ def _table_rows(page: pymupdf.Page) -> tuple[list[list[object]], int | None, int
             for index in range(column_count)
         ]
         table_registered, table_examined = _contact_columns(header)
-        if table_registered is None or table_examined is None:
-            continue
-        registered_index = table_registered
-        examined_index = table_examined
-        rows.extend(row for row in extracted[first_record_index:] if _record_row(row))
+        columns_found = table_registered is not None and table_examined is not None
+        for row in extracted[first_record_index:]:
+            if not _record_row(row):
+                continue
+            registered = (
+                _integer_cell(row[table_registered])
+                if table_registered is not None and table_registered < len(row) else None
+            )
+            examined = (
+                _integer_cell(row[table_examined])
+                if table_examined is not None and table_examined < len(row) else None
+            )
+            rows.append(_TableRecord(registered, examined, columns_found))
 
-    return rows, registered_index, examined_index
+    return rows
 
 
 def analyze_bulletin(content: bytes, selected_agravo: str) -> BulletinSummary:
@@ -176,24 +197,23 @@ def analyze_bulletin(content: bytes, selected_agravo: str) -> BulletinSummary:
                 first_page_text = _normalize(page_text)
             lines = [line.strip() for line in page_text.splitlines() if line.strip()]
             page_unit = _unit_from_lines(lines)
+            if any(_UNIT_LINE.match(line) for line in lines):
+                current_unit = page_unit
             if page_unit:
                 current_unit = page_unit
                 observed_units.add(page_unit)
 
-            table_rows, registered_index, examined_index = _table_rows(page)
+            table_rows = _table_rows(page)
             if table_rows:
                 page_records = len(table_rows)
-                contact_columns_found = True
+                contact_columns_found = contact_columns_found or any(
+                    row.contact_columns_found for row in table_rows
+                )
                 unit = current_unit
                 for row in table_rows:
-                    if registered_index >= len(row) or examined_index >= len(row):
-                        if unit:
-                            summary = unit_summaries.setdefault(unit, _MutableUnitSummary())
-                            summary.contact_records_to_check += 1
-                        continue
-                    registered = _integer_cell(row[registered_index])
-                    examined = _integer_cell(row[examined_index])
-                    if registered is None or examined is None:
+                    registered = row.contacts_registered
+                    examined = row.contacts_examined
+                    if registered is None or examined is None or examined > registered:
                         if unit:
                             summary = unit_summaries.setdefault(unit, _MutableUnitSummary())
                             summary.contact_records_to_check += 1
@@ -213,7 +233,9 @@ def analyze_bulletin(content: bytes, selected_agravo: str) -> BulletinSummary:
             text_records = sum(bool(_ROW_START.match(line)) for line in lines)
             if text_records:
                 if current_unit:
-                    unit_summaries.setdefault(current_unit, _MutableUnitSummary()).records += text_records
+                    summary = unit_summaries.setdefault(current_unit, _MutableUnitSummary())
+                    summary.records += text_records
+                    summary.contact_records_to_check += text_records
                 else:
                     records_without_unit += text_records
 
