@@ -1,4 +1,4 @@
-import sqlite3
+from google.api_core.exceptions import GoogleAPICallError, RetryError
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response, RedirectResponse
@@ -98,7 +98,7 @@ def confirm_import(
         result, item = preview_store.consume(preview_token, owner_id=user.id, importer=persist)
     except ValueError as error:
         return render_import_form(units, csrf, error=str(error), status_code=422)
-    except sqlite3.Error as error:
+    except (GoogleAPICallError, RetryError) as error:
         raise HTTPException(status_code=503, detail="Banco indisponível. Tente confirmar novamente.") from error
     return render_import_result(result, item, csrf)
 

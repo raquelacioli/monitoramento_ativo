@@ -10,3 +10,15 @@ uploads/
 *.pdf
 instance/
 .vscode/
+.local-tools/
+.test-tmp/
+.firebase/
+*-debug.log
+firebase-debug.*.log
+firestore-debug.log
+*service-account*.json
+*credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx

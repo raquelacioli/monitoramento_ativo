@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: monitoramento-ativo
+    runtime: python
+    plan: free
+    region: virginia
+    autoDeployTrigger: "off"
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: FIREBASE_PROJECT_ID
+        value: monitoramentoativo
+      - key: FIRESTORE_DATABASE_ID
+        value: (default)
+      - key: FIRESTORE_NAMESPACE
+        value: monitoramento_ativo
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        value: /etc/secrets/firebase-service-account.json
+      - key: MONITORAMENTO_COOKIE_SECURE
+        value: "1"
+      - key: RECOVERY_EMAIL_PROVIDER
+        value: resend
+      - key: APP_BASE_URL
+        sync: false
+      - key: RECOVERY_EMAIL_FROM
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false

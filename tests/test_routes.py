@@ -1,11 +1,9 @@
+from firestore_support import FirestoreTestCase
+from monitoramento.firestore_store import get_store, key
 import os
 import re
 import secrets
-import sqlite3
-import tempfile
 import unittest
-from contextlib import closing
-from pathlib import Path
 from unittest.mock import patch
 
 import pymupdf
@@ -41,97 +39,30 @@ from monitoramento.tracking_store import load_module_updates
 from bulletin_pdf_factory import make_tb_pdf
 
 
-class MonitoringRoutesTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.clients: list[TestClient] = []
-        cls.temp_directory = tempfile.TemporaryDirectory()
-        cls.database_path = Path(cls.temp_directory.name) / "monitoramento.sqlite3"
-        cls.original_database_path = os.environ.get("MONITORAMENTO_DB_PATH")
-        os.environ["MONITORAMENTO_DB_PATH"] = str(cls.database_path)
+class MonitoringRoutesTests(FirestoreTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.clients = []
         admin = create_first_admin("admin", "AdminSenhaSegura#2026")
+        self.admin_id = admin.id
         for username, role, unit in (
             ("vera", "unit", "Unidade de Saúde de Vera (demonstração)"),
             ("outra", "unit", "Unidade de Saúde Diferente (demonstração)"),
             ("vigilancia", "surveillance", None),
         ):
             account = create_user(username, "SenhaTemporaria#2026", role, unit)
-            salt = secrets.token_bytes(16)
-            with closing(sqlite3.connect(cls.database_path)) as connection:
-                connection.execute(
-                    "UPDATE auth_users SET password_hash=?, password_salt=?, "
-                    "must_change_password=0 WHERE id=?",
-                    (
-                        _password_hash("SenhaDeTesteForte#2026", salt),
-                        salt,
-                        account.id,
-                    ),
-                )
-                connection.commit()
-        cls.admin_id = admin.id
-        with closing(sqlite3.connect(cls.database_path)) as connection:
-            cls.initial_accounts = connection.execute("SELECT * FROM auth_users").fetchall()
-        load_module_updates(MODULES["tuberculose"])
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        for client in cls.clients:
-            client.close()
-        if cls.original_database_path is None:
-            os.environ.pop("MONITORAMENTO_DB_PATH", None)
-        else:
-            os.environ["MONITORAMENTO_DB_PATH"] = cls.original_database_path
-        cls.temp_directory.cleanup()
-
-    def setUp(self) -> None:
-        with closing(sqlite3.connect(self.database_path)) as connection:
-            connection.execute("DELETE FROM tracking_updates")
-            connection.execute("DELETE FROM auth_sessions")
-            connection.execute("DELETE FROM auth_login_attempts")
-            connection.execute("DELETE FROM auth_users")
-            placeholders = ",".join("?" for _ in self.initial_accounts[0])
-            connection.executemany(
-                f"INSERT INTO auth_users VALUES ({placeholders})", self.initial_accounts
-            )
-            for table in (
-                "auth_password_reset_tokens",
-                "auth_password_reset_limits",
-            ):
-                if table in {
-                    row[0]
-                    for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'table'"
-                    )
-                }:
-                    connection.execute(f"DELETE FROM {table}")
-            existing_tables = {
-                row[0]
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                )
-            }
-            for table in (
-                "monthly_unit_confirmation_events",
-                "monthly_unit_confirmations",
-                "monthly_monitoring_deadline_events",
-                "monthly_monitoring_deadlines",
-                "monthly_followup_responses",
-                "monthly_followup_events",
-                "monthly_followups",
-                "monthly_vigilance_notes",
-                "monthly_record_revisions",
-                "monthly_import_conflicts",
-                "monthly_records",
-                "monthly_import_unit_coverage",
-                "monthly_imports",
-                "monthly_competences",
-            ):
-                if table in existing_tables:
-                    connection.execute(f"DELETE FROM {table}")
-            connection.commit()
+            change_password(account.id, "SenhaDeTesteForte#2026")
         self.client = TestClient(app, follow_redirects=False)
         self.clients.append(self.client)
         self._login("vera", "SenhaDeTesteForte#2026")
+        self.addCleanup(lambda: [client.close() for client in self.clients])
+
+    def _require_password_change(self, user_id, required):
+        def update(tx):
+            row = tx.get('auth_users', key(user_id))
+            row['must_change_password'] = required
+            tx.set('auth_users', key(user_id), row)
+        get_store().run(update, guard='auth')
 
     def _switch_role(
         self,
@@ -189,12 +120,7 @@ class MonitoringRoutesTests(unittest.TestCase):
         }
         for username, requests in cases.items():
             account = next(user for user in list_users() if user.username == username)
-            with closing(sqlite3.connect(self.database_path)) as connection:
-                connection.execute(
-                    "UPDATE auth_users SET must_change_password = 1 WHERE id = ?",
-                    (account.id,),
-                )
-                connection.commit()
+            self._require_password_change(account.id, True)
             token, csrf = create_session(account.id)
             self.client.cookies.set(COOKIE_NAME, token)
             try:
@@ -210,12 +136,7 @@ class MonitoringRoutesTests(unittest.TestCase):
                     self.client.post("/logout", data={"csrf_token": csrf}).status_code, 303
                 )
             finally:
-                with closing(sqlite3.connect(self.database_path)) as connection:
-                    connection.execute(
-                        "UPDATE auth_users SET must_change_password = 0 WHERE id = ?",
-                        (account.id,),
-                    )
-                    connection.commit()
+                self._require_password_change(account.id, False)
 
     def test_communication_hides_previous_values_from_another_unit(self) -> None:
         unit = "Unidade de Saúde de Vera (demonstração)"
@@ -289,9 +210,8 @@ class MonitoringRoutesTests(unittest.TestCase):
         self.assertEqual(denied.status_code, 403)
         self._switch_role("vigilancia")
         csrf = self._form_csrf()
-        with closing(sqlite3.connect(self.database_path)) as connection:
-            connection.execute("UPDATE auth_users SET must_change_password=1 WHERE username='vigilancia'")
-            connection.commit()
+        surveillance = next(u for u in list_users() if u.username == 'vigilancia')
+        self._require_password_change(surveillance.id, True)
         denied = self.client.post("/api/boletins/confirmar", data={"csrf_token": csrf, "preview_token": "x" * 43})
         self.assertEqual(denied.status_code, 403)
 

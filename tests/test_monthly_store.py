@@ -1,11 +1,9 @@
+from firestore_support import FirestoreTestCase
+from monitoramento.firestore_store import get_store, key
 import os
-import sqlite3
-import tempfile
 import unittest
 from unittest.mock import patch
-from contextlib import closing
 from datetime import date
-from pathlib import Path
 
 from monitoramento.monthly_store import (
     close_monthly_competence,
@@ -34,20 +32,8 @@ from monitoramento.monthly_store import (
 )
 
 
-class MonthlyStoreTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp_directory = tempfile.TemporaryDirectory()
-        self.original_database_path = os.environ.get("MONITORAMENTO_DB_PATH")
-        os.environ["MONITORAMENTO_DB_PATH"] = str(
-            Path(self.temp_directory.name) / "monthly.sqlite3"
-        )
+class MonthlyStoreTests(FirestoreTestCase):
 
-    def tearDown(self) -> None:
-        if self.original_database_path is None:
-            os.environ.pop("MONITORAMENTO_DB_PATH", None)
-        else:
-            os.environ["MONITORAMENTO_DB_PATH"] = self.original_database_path
-        self.temp_directory.cleanup()
 
     @staticmethod
     def _record(
@@ -117,13 +103,7 @@ class MonthlyStoreTests(unittest.TestCase):
         self.assertEqual(get_monthly_competence_state(
             agravo="tuberculose", competence="2026-10"
         ), "closed")
-        with closing(sqlite3.connect(os.environ["MONITORAMENTO_DB_PATH"])) as connection:
-            closed_by = connection.execute(
-                """
-                SELECT closed_by FROM monthly_competences
-                WHERE agravo = 'tuberculose' AND competence = '2026-10'
-                """
-            ).fetchone()[0]
+        closed_by = get_store().get("monthly_competences", key("tuberculose", "2026-10"))["closed_by"]
         self.assertEqual(closed_by, "vigilancia-teste")
 
         with self.assertRaisesRegex(ValueError, "não está aberta"):
@@ -235,13 +215,7 @@ class MonthlyStoreTests(unittest.TestCase):
             competence="2026-11",
             actor="vigilancia-teste",
         )
-        with closing(sqlite3.connect(os.environ["MONITORAMENTO_DB_PATH"])) as connection:
-            closed_by = connection.execute(
-                """
-                SELECT closed_by FROM monthly_competences
-                WHERE agravo = 'tuberculose' AND competence = '2026-11'
-                """
-            ).fetchone()[0]
+        closed_by = get_store().get("monthly_competences", key("tuberculose", "2026-11"))["closed_by"]
         self.assertEqual(closed_by, "vigilancia-teste")
         december = import_monthly_records(
             agravo="tuberculose",

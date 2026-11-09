@@ -2,6 +2,8 @@
 
 Aplicação demonstrativa para acompanhamento de Tuberculose e Hanseníase com FastAPI.
 
+A persistência atual usa **Cloud Firestore**, sem SQLite no servidor. Consulte o [guia de Firestore e Render](docs/implantacao-render-firestore.md) para variáveis, credenciais, testes com emulador, migração legada e publicação. Nenhuma migração ou implantação ocorre automaticamente.
+
 ## Preparar o ambiente e executar os testes
 
 Use Python 3.12 atualizado, versão utilizada na verificação deste projeto. No PowerShell, dentro de `monitoramento_ativo`:
@@ -9,10 +11,10 @@ Use Python 3.12 atualizado, versão utilizada na verificação deste projeto. No
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m unittest discover -s tests -q
+npx.cmd --yes firebase-tools@15.35.0 emulators:start --only firestore --project demo-monitoramento-ativo
 ```
 
-Os testes usam bancos SQLite temporários e simulam o envio de e-mail. O ambiente precisa permitir criar e remover diretórios temporários. Para instalar somente as dependências da aplicação, use `requirements.txt`.
+Em outro terminal, execute `.\.venv\Scripts\python.exe -B scripts/run_tests.py`. Os testes usam namespaces isolados no emulador, dados fictícios e envio de e-mail simulado. Somente os testes da migração criam SQLite temporário; o banco original não é necessário. Para instalar somente as dependências da aplicação, use `requirements.txt`.
 
 Para iniciar o servidor local quando a porta estiver livre:
 
@@ -50,7 +52,7 @@ Se a recuperação por e-mail não estiver disponível, abra um terminal do VS C
 .\.venv\Scripts\python.exe -m monitoramento.reset_admin_password
 ```
 
-Uma janela mostrará o caminho do banco para conferência. Informe o usuário da conta Administradora ativa, confirme a operação pelo botão e digite uma nova senha exclusiva nos campos mascarados. Ela deve ter pelo menos 12 caracteres e ser confirmada. O comando não cria contas: altera somente a senha da conta Administradora informada e encerra as sessões dessa conta. Se o servidor usar `MONITORAMENTO_DB_PATH`, execute o comando com a mesma configuração para não alterar outro banco. O servidor em execução não precisa ser iniciado novamente.
+O terminal mostrará o projeto e namespace Firestore para conferência. Informe a conta Administradora ativa, confirme com `REDEFINIR` e digite uma nova senha mascarada, com pelo menos 12 caracteres. Use as mesmas variáveis Firestore do servidor. O comando não cria contas; redefine a senha e revoga sessões anteriores. Não é necessário reiniciar o servidor.
 
 ## Uso e limitações desta versão
 
@@ -75,7 +77,7 @@ Para gerar novamente a amostra sem dados reais:
 Ela será criada em `docs/exemplos/boletim_tuberculose_ficticio.pdf`, com a unidade **Unidade ficticia de testes**. Para experimentá-la na interface, cadastre previamente uma conta de unidade ativa com esse nome. Os testes criam suas próprias contas e bancos temporários; não fazem esse cadastro no banco de uso. O PDF original de Downloads nunca é copiado para a amostra nem usado pelos testes.
 
 - Os registros são fictícios e servem somente para demonstração e testes.
-- A unidade pode atualizar a data do último comparecimento diretamente na linha do registro; o valor fica salvo junto às demais alterações demonstrativas no SQLite local.
+- A unidade pode atualizar a data do último comparecimento diretamente na linha do registro; o valor fica salvo junto às demais alterações demonstrativas no Firestore.
 - Os arquivos em branco oficiais fornecidos para Tuberculose e Hanseníase foram usados para transcrever os rótulos e códigos explicitamente informados. Isso não valida por si só o dicionário SINAN completo, as regras clínicas, as condicionais ou a versão vigente.
 - Somente o perfil Vigilância pode abrir a área de upload e chamar o endpoint de análise de PDF; o perfil Unidade não recebe o formulário nem a navegação para Vigilância.
 - O endpoint `/api/boletins/analisar` continua produzindo somente um resumo agregado. A importação individual de Tuberculose usa o fluxo separado de prévia/confirmação descrito acima. Um formulário em branco reconhecido no resumo não encerra registros de competências anteriores.
@@ -95,6 +97,6 @@ Ela será criada em `docs/exemplos/boletim_tuberculose_ficticio.pdf`, com a unid
 - A importação individual é limitada ao layout reconhecido de Tuberculose e aos campos inequívocos. Para ampliar a cobertura, continuam necessários os dicionários SINAN oficiais vigentes, a validação do rótulo de TRM-TB código 2 e a identificação documentada dos tópicos automáticos 1 a 4. O leitor não infere valores das células mescladas.
 - Não use dados reais de pacientes nesta versão. Antes disso, são necessários validação documental e avaliação de segurança e privacidade, incluindo proteção do banco local, backups e implantação com HTTPS.
 - Para uma implantação HTTPS, configure `MONITORAMENTO_COOKIE_SECURE=1` no ambiente do processo antes de iniciar a aplicação.
-- A autenticação continua local (SQLite + PBKDF2); não há Firebase Authentication nem serviço de e-mail preexistente. A recuperação está disponível em `/recuperar-senha`, usa token aleatório de uso único (30 minutos, somente hash armazenado), revoga sessões após redefinição e limita solicitações por IP e e-mail. O token segue no fragmento `#token` do link e a página o envia no POST sem incluí-lo em requisições GET ou no cabeçalho Referer.
+- A autenticação mantém PBKDF2 e os perfis existentes, com contas e sessões no Firestore; Firebase Authentication não é necessário. A recuperação está disponível em `/recuperar-senha`, usa token aleatório de uso único (30 minutos, somente hash armazenado), revoga sessões após redefinição e limita solicitações por IP e e-mail. O token segue no fragmento `#token` do link e a página o envia no POST sem incluí-lo em requisições GET ou no cabeçalho Referer. Configure um provedor HTTPS no Render gratuito conforme o guia; SMTP permanece opcional.
 - Endereços para recuperação são opcionais e devem ser cadastrados/alterados somente pelo administrador em Contas de acesso, após confirmar que a pessoa controla o endereço. Contas já existentes começam sem e-mail e não podem recuperar a senha até esse cadastro. A recuperação não altera perfil nem unidade.
 - Para configurar o SMTP, copie `.env.example` para `.env` e preencha as credenciais de um provedor aprovado, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` e `APP_BASE_URL`. A URL base deve ser a origem HTTPS pública confiável; o sistema não usa o cabeçalho `Host` recebido. O e-mail é enviado com STARTTLS. Use `MONITORAMENTO_COOKIE_SECURE=1` em produção HTTPS. Sem configuração válida, a resposta pública continua genérica e nenhum link é enviado; o servidor registra apenas aviso sem e-mail/token. Testes automatizados simulam o serviço e não enviam mensagens reais.

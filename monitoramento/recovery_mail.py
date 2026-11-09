@@ -1,6 +1,9 @@
 import os
 import smtplib
 import ssl
+import json
+import hashlib
+import urllib.request
 from email.message import EmailMessage
 from email.utils import parseaddr
 from urllib.parse import urlsplit
@@ -41,6 +44,12 @@ def _mail_configuration() -> tuple[str, int, str, str, str, str]:
 
 
 def send_password_reset_email(recipient: str, token: str) -> None:
+    provider = os.environ.get('RECOVERY_EMAIL_PROVIDER', 'smtp')
+    if provider == 'resend':
+        _send_https(recipient, token)
+        return
+    if provider != 'smtp':
+        raise RecoveryMailConfigurationError('Provedor de e-mail inválido.')
     host, port, username, password, sender, base_url = _mail_configuration()
     message = EmailMessage()
     message["Subject"] = "Monitoramento Ativo — Recuperação de senha"
@@ -65,3 +74,37 @@ def send_password_reset_email(recipient: str, token: str) -> None:
         server.ehlo()
         server.login(username, password)
         server.send_message(message)
+
+
+def _send_https(recipient: str, token: str) -> None:
+    api_key = os.environ.get('RESEND_API_KEY', '')
+    sender = os.environ.get('RECOVERY_EMAIL_FROM', '').strip()
+    base_url = os.environ.get('APP_BASE_URL', '').rstrip('/')
+    parsed = urlsplit(base_url)
+    if (not api_key or parsed.scheme != 'https' or not parsed.netloc
+            or parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password):
+        raise RecoveryMailConfigurationError('Configure o provedor e a origem HTTPS pública.')
+    try:
+        name, address = parseaddr(sender, strict=True)
+        if name or address != sender or '@' not in sender or '\r' in sender or '\n' in sender:
+            raise ValueError('invalid sender')
+    except ValueError:
+        raise RecoveryMailConfigurationError('Remetente de recuperação inválido.') from None
+    reset_link = f'{base_url}/redefinir-senha#token={token}'
+    payload = {'from': sender, 'to': [recipient],
+               'subject': 'Monitoramento Ativo — Recuperação de senha',
+               'text': 'Recebemos uma solicitação para redefinir sua senha.\n\n'
+                       f'{reset_link}\n\nEste link é válido por 30 minutos e pode ser usado uma vez. '
+                       'Se não solicitou a alteração, ignore esta mensagem.'}
+    request = urllib.request.Request('https://api.resend.com/emails',
+        data=json.dumps(payload).encode(), method='POST',
+        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json',
+                 'User-Agent': 'MonitoramentoAtivo/1.0',
+                 'Idempotency-Key': hashlib.sha256(token.encode()).hexdigest()})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if response.status not in (200, 201, 202):
+                raise OSError('delivery failed')
+    except Exception:
+        # Do not propagate headers, response bodies, addresses or reset links.
+        raise RecoveryMailConfigurationError('Envio de recuperação indisponível.') from None

@@ -1,12 +1,8 @@
-import json
-import os
-import sqlite3
-from contextlib import closing
 from dataclasses import replace
 from datetime import date
-from pathlib import Path
 
 from monitoramento.data import ModuleDemo, PatientDemo
+from monitoramento.firestore_store import get_store, key, snapshot_read
 
 MAX_OBSERVATION_LENGTH = 1000
 MAX_PENDING_LENGTH = 250
@@ -17,59 +13,9 @@ FOLLOWUP_STATUSES = (
 )
 
 
-def _database_path() -> Path:
-    configured_path = os.environ.get("MONITORAMENTO_DB_PATH")
-    if configured_path:
-        return Path(configured_path)
-    return Path(__file__).resolve().parent.parent / "instance" / "monitoramento.sqlite3"
-
-
-def database_path() -> Path:
-    return _database_path()
-
-
-def _connect() -> sqlite3.Connection:
-    database_path = _database_path()
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(database_path, timeout=5)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
-def _initialize(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS tracking_updates (
-            agravo TEXT NOT NULL,
-            record_id TEXT NOT NULL,
-            followup_status TEXT NOT NULL,
-            contacts_registered INTEGER NOT NULL,
-            contacts_examined INTEGER NOT NULL,
-            pending_items TEXT NOT NULL,
-            observation TEXT NOT NULL,
-            last_updated TEXT NOT NULL,
-            PRIMARY KEY (agravo, record_id)
-        )
-        """
-    )
-    columns = {
-        row["name"]
-        for row in connection.execute("PRAGMA table_info(tracking_updates)").fetchall()
-    }
-    if "form_values" not in columns:
-        connection.execute(
-            "ALTER TABLE tracking_updates ADD COLUMN form_values TEXT NOT NULL DEFAULT '{}'"
-        )
-
-
+@snapshot_read
 def load_module_updates(module: ModuleDemo) -> ModuleDemo:
-    with closing(_connect()) as connection:
-        _initialize(connection)
-        rows = connection.execute(
-            "SELECT * FROM tracking_updates WHERE agravo = ?",
-            (module.key,),
-        ).fetchall()
-        connection.commit()
+    rows = get_store().query('tracking_updates', [('agravo', '==', module.key)])
 
     updates = {row["record_id"]: row for row in rows}
 
@@ -90,7 +36,7 @@ def load_module_updates(module: ModuleDemo) -> ModuleDemo:
             contacts_examined=update["contacts_examined"],
             pending_items=update["pending_items"],
             observation=update["observation"],
-            form_values=tuple(json.loads(update["form_values"]).items()),
+            form_values=tuple(update["form_values"].items()),
             last_updated=date.fromisoformat(update["last_updated"]),
             automatic_note=note,
             review_signal_demo=status == "Sinalização para revisão",
@@ -129,38 +75,15 @@ def save_tracking_update(
             f"Observações devem ter no máximo {MAX_OBSERVATION_LENGTH} caracteres."
         )
 
-    with closing(_connect()) as connection:
-        _initialize(connection)
-        connection.execute(
-            """
-            INSERT INTO tracking_updates (
-                agravo, record_id, followup_status, contacts_registered,
-                contacts_examined, pending_items, observation, form_values, last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(agravo, record_id) DO UPDATE SET
-                followup_status = excluded.followup_status,
-                contacts_registered = excluded.contacts_registered,
-                contacts_examined = excluded.contacts_examined,
-                pending_items = excluded.pending_items,
-                observation = excluded.observation,
-                form_values = excluded.form_values,
-                last_updated = excluded.last_updated
-            """,
-            (
-                agravo,
-                record_id,
-                followup_status,
-                contacts_registered,
-                contacts_examined,
-                pending_items.strip(),
-                observation.strip(),
-                json.dumps(form_values, ensure_ascii=False),
-                date.today().isoformat(),
-            ),
-        )
-        connection.commit()
+    data = dict(agravo=agravo, record_id=record_id, followup_status=followup_status,
+                contacts_registered=contacts_registered, contacts_examined=contacts_examined,
+                pending_items=pending_items.strip(), observation=observation.strip(),
+                form_values=form_values, last_updated=date.today().isoformat())
+    get_store().run(lambda tx: tx.set('tracking_updates', key(agravo, record_id), data),
+                    guard='tracking')
 
 
+@snapshot_read
 def load_all_modules(modules: dict[str, ModuleDemo]) -> dict[str, ModuleDemo]:
     return {
         key: load_module_updates(module)

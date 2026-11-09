@@ -1,4 +1,7 @@
+from firestore_support import FirestoreTestCase
+from monitoramento.firestore_store import get_store
 import os
+import hashlib
 import sqlite3
 import tempfile
 import unittest
@@ -19,13 +22,9 @@ from monitoramento.auth import (
 from monitoramento.recovery_mail import send_password_reset_email
 
 
-class PasswordRecoveryTests(unittest.TestCase):
+class PasswordRecoveryTests(FirestoreTestCase):
     def setUp(self) -> None:
-        self.temp_directory = tempfile.TemporaryDirectory()
-        self.original_database_path = os.environ.get("MONITORAMENTO_DB_PATH")
-        os.environ["MONITORAMENTO_DB_PATH"] = str(
-            Path(self.temp_directory.name) / "auth.sqlite3"
-        )
+        super().setUp()
         self.user = create_user(
             "recovery-user",
             "SenhaAntigaSegura#2026",
@@ -34,23 +33,13 @@ class PasswordRecoveryTests(unittest.TestCase):
             "profissional@example.test",
         )
 
-    def tearDown(self) -> None:
-        if self.original_database_path is None:
-            os.environ.pop("MONITORAMENTO_DB_PATH", None)
-        else:
-            os.environ["MONITORAMENTO_DB_PATH"] = self.original_database_path
-        self.temp_directory.cleanup()
-
     def test_reset_token_is_hashed_single_use_revokes_sessions_and_keeps_role(self) -> None:
         session_token, _ = create_session(self.user.id)
         issued = issue_password_reset_token("PROFISSIONAL@example.test", "192.0.2.1")
         self.assertIsNotNone(issued)
         token, recipient = issued
         self.assertEqual(recipient, "profissional@example.test")
-        with closing(sqlite3.connect(os.environ["MONITORAMENTO_DB_PATH"])) as connection:
-            stored_hash = connection.execute(
-                "SELECT token_hash FROM auth_password_reset_tokens"
-            ).fetchone()[0]
+        stored_hash = get_store().query('auth_password_reset_tokens')[0]['token_hash']
         self.assertNotEqual(stored_hash, token)
 
         self.assertTrue(reset_password_with_token(token, "SenhaNovaSegura#2026"))
@@ -124,7 +113,9 @@ class PasswordRecoveryTests(unittest.TestCase):
         self.assertNotIn("fake-secret-for-test", message.as_string())
 
     def test_existing_auth_database_is_migrated_without_assigning_an_email(self) -> None:
-        legacy_path = Path(self.temp_directory.name) / "legacy.sqlite3"
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        legacy_path = Path(temporary.name) / "legacy.sqlite3"
         with closing(sqlite3.connect(legacy_path)) as connection:
             connection.execute(
                 """
@@ -146,27 +137,25 @@ class PasswordRecoveryTests(unittest.TestCase):
                 INSERT INTO auth_users (
                     username, password_hash, password_salt, role, unit,
                     active, must_change_password, created_at
-                ) VALUES ('legacy', X'01', X'02', 'unit', 'Unidade fictícia', 1, 0, 1)
-                """
+                ) VALUES ('legacy', ?, ?, 'unit', 'Unidade fictícia', 1, 0, 1)
+                """,
+                (hashlib.pbkdf2_hmac('sha256', b'fictitious-test-password', b'0123456789abcdef', 600_000),
+                 b'0123456789abcdef'),
             )
             connection.commit()
 
-        os.environ["MONITORAMENTO_DB_PATH"] = str(legacy_path)
-        try:
+        from monitoramento.migrate_sqlite import migrate
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {'FIRESTORE_NAMESPACE': get_store().namespace + '_legacy'}):
+            migrate(legacy_path, apply=True)
             from monitoramento.auth import list_users
-
             users = list_users()
             self.assertEqual(len(users), 1)
             self.assertIsNone(users[0].email)
-            with closing(sqlite3.connect(legacy_path)) as connection:
-                columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(auth_users)")
-                }
-            self.assertIn("email", columns)
-        finally:
-            os.environ["MONITORAMENTO_DB_PATH"] = str(
-                Path(self.temp_directory.name) / "auth.sqlite3"
-            )
+        with closing(sqlite3.connect(legacy_path)) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(auth_users)")}
+        self.assertNotIn("email", columns)  # Migration must never alter the original SQLite.
 
 
 if __name__ == "__main__":

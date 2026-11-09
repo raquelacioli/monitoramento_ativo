@@ -1,3 +1,4 @@
+from firestore_support import FirestoreTestCase
 import os
 import tempfile
 import unittest
@@ -13,21 +14,10 @@ from monitoramento.auth import (
 from monitoramento.reset_admin_password import reset_admin_password
 
 
-class AdminPasswordResetTests(unittest.TestCase):
+class AdminPasswordResetTests(FirestoreTestCase):
     def setUp(self) -> None:
-        self.temp_directory = tempfile.TemporaryDirectory()
-        self.original_database_path = os.environ.get("MONITORAMENTO_DB_PATH")
-        os.environ["MONITORAMENTO_DB_PATH"] = str(
-            Path(self.temp_directory.name) / "auth.sqlite3"
-        )
+        super().setUp()
         self.admin = create_first_admin("admin-local", "SenhaAntigaSegura#2026")
-
-    def tearDown(self) -> None:
-        if self.original_database_path is None:
-            os.environ.pop("MONITORAMENTO_DB_PATH", None)
-        else:
-            os.environ["MONITORAMENTO_DB_PATH"] = self.original_database_path
-        self.temp_directory.cleanup()
 
     def test_reset_changes_only_active_admin_password_and_revokes_sessions(self) -> None:
         session_token, _ = create_session(self.admin.id)

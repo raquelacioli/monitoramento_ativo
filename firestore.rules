@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Proposed rules for this app only. Never publish over another app's rules.
+    match /monitoramento_ativo/{namespace}/{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
